@@ -2,10 +2,21 @@ const router = require("express").Router();
 const Order = require("../models/Order");
 const Cart = require("../models/Cart");
 const User = require("../models/User");
+const Settings = require("../models/Settings");
 const auth = require("../middleware/authMiddleware");
 const transporter = require("../config/mailer");
 const generateInvoice = require("../utils/generateInvoice");
 const buildEmailTemplate = require("../utils/emailTemplate");
+
+// Helper to get WhatsApp number from DB or env
+async function getWhatsAppNumber() {
+  try {
+    const setting = await Settings.findOne({ key: "whatsapp_number" });
+    return setting?.value || process.env.WHATSAPP_BUSINESS_NUMBER || "+919154717942";
+  } catch {
+    return process.env.WHATSAPP_BUSINESS_NUMBER || "+919154717942";
+  }
+}
 
 /* =====================================================
    PLACE ORDER
@@ -94,16 +105,177 @@ router.post("/place", auth, async (req, res) => {
       });
     }
 
+    // Generate WhatsApp Message
+    let waMessage = `*New Order Placed!* 🛍️\n\n`;
+    waMessage += `*Order ID:* ${order._id}\n`;
+    waMessage += `*Invoice:* ${invoiceNumber}\n`;
+    waMessage += `*Customer:* ${userName}\n`;
+    if (userEmail) waMessage += `*Email:* ${userEmail}\n`;
+    waMessage += `*Address:* ${address}\n\n`;
+
+    waMessage += `*Items:*\n`;
+    cart.items.forEach((item, index) => {
+      const p = item.productId;
+      waMessage += `${index + 1}. ${p.name || 'Product'} (x${item.quantity})\n`;
+      if (item.size) waMessage += `   Size: ${item.size}\n`;
+      if (item.color) waMessage += `   Color: ${item.color}\n`;
+      waMessage += `   Price: ₹${p.price * item.quantity}\n`;
+    });
+
+    waMessage += `\n*Subtotal:* ₹${subtotal}\n`;
+    waMessage += `*Delivery Fee:* ₹${deliveryFee}\n`;
+    waMessage += `*Tax:* ₹${tax}\n`;
+    waMessage += `*Total Amount:* ₹${total}\n\n`;
+    waMessage += `*Payment Method:* ${paymentMethod}`;
+
+    const whatsappNumber = await getWhatsAppNumber();
+    const formattedWaNum = whatsappNumber.replace(/\D/g, '');
+    const whatsappUrl = `https://api.whatsapp.com/send?phone=${formattedWaNum}&text=${encodeURIComponent(waMessage)}`;
+
     cart.items = [];
     await cart.save();
 
-    res.json({ message: "Order placed successfully", order });
+    res.json({ message: "Order placed successfully", order, whatsappUrl });
 
   } catch (err) {
     console.error(err);
     res.status(500).json("Order failed");
   }
 });
+
+/* =====================================================
+   PLACE GUEST ORDER
+===================================================== */
+router.post("/place-guest", async (req, res) => {
+  try {
+    const { address, paymentMethod = "COD", items, guestEmail, guestName } = req.body;
+    if (!address) return res.status(400).json("Delivery address is required");
+    if (!items || items.length === 0) return res.status(400).json("Cart is empty");
+    
+    // items should be populated with product details from frontend or we should fetch price
+    // Since frontend sends just productId and quantity (and size/color), we should fetch prices.
+    const Product = require("../models/Product");
+    
+    let subtotal = 0;
+    const orderItems = [];
+    
+    for (const item of items) {
+      const p = await Product.findById(item.productId);
+      if (p) {
+        subtotal += p.price * item.quantity;
+        orderItems.push({
+          productId: p._id,
+          name: p.name, // Just for whatsapp building
+          quantity: item.quantity,
+          price: p.price,
+          size: item.size,
+          color: item.color
+        });
+      }
+    }
+
+    const deliveryFee = subtotal > 500 ? 0 : 40;
+    const tax = Math.round(subtotal * 0.18);
+    const total = subtotal + deliveryFee + tax;
+
+    const expectedDelivery = new Date();
+    expectedDelivery.setDate(expectedDelivery.getDate() + 5);
+
+    const invoiceNumber =
+      `INV-G-${Date.now()}-${Math.random().toString(36).substr(2, 6).toUpperCase()}`;
+
+    const order = new Order({
+      guestEmail,
+      guestName: guestName || address.fullName,
+      items: orderItems.map(i => ({
+        productId: i.productId,
+        quantity: i.quantity,
+        price: i.price,
+        size: i.size,
+        color: i.color
+      })),
+      subtotal,
+      deliveryFee,
+      tax,
+      total,
+      deliveryAddress: address,
+      status: "Placed",
+      statusHistory: [{
+        status: "Placed",
+        message: "Order successfully placed",
+        updatedBy: "System"
+      }],
+      paymentDetails: {
+        method: paymentMethod,
+        status: paymentMethod === "COD" ? "Pending" : "Completed"
+      },
+      expectedDeliveryDate: expectedDelivery,
+      invoiceNumber
+    });
+
+    await order.save();
+
+    const userName = order.guestName;
+    const userEmail = order.guestEmail;
+
+    if (userEmail) {
+      const emailHtml = buildEmailTemplate({
+        title: "Order Confirmed 🎉",
+        userName,
+        content: `
+          <p>Your guest order has been placed successfully.</p>
+          <div style="background:#f3f4f6;padding:15px;border-radius:6px;">
+            <p><strong>Order ID:</strong> ${order._id}</p>
+            <p><strong>Invoice:</strong> ${invoiceNumber}</p>
+            <p><strong>Total:</strong> ₹${total}</p>
+            <p><strong>Expected Delivery:</strong> ${expectedDelivery.toLocaleDateString("en-IN")}</p>
+          </div>
+        `,
+        buttonText: "Shop More",
+        buttonLink: `${process.env.FRONTEND_URL}`
+      });
+
+      await transporter.sendMail({
+        to: userEmail,
+        subject: `Order Confirmed - ${invoiceNumber}`,
+        html: emailHtml
+      }).catch(e => console.error("Email error", e));
+    }
+
+    // Generate WhatsApp Message
+    let waMessage = `*New Guest Order Placed!* 🛍️\n\n`;
+    waMessage += `*Order ID:* ${order._id}\n`;
+    waMessage += `*Invoice:* ${invoiceNumber}\n`;
+    waMessage += `*Customer:* ${userName} (Guest)\n`;
+    if (userEmail) waMessage += `*Email:* ${userEmail}\n`;
+    waMessage += `*Address:* ${address.line1}, ${address.city}\n\n`;
+
+    waMessage += `*Items:*\n`;
+    orderItems.forEach((item, index) => {
+      waMessage += `${index + 1}. ${item.name || 'Product'} (x${item.quantity})\n`;
+      if (item.size) waMessage += `   Size: ${item.size}\n`;
+      if (item.color) waMessage += `   Color: ${item.color}\n`;
+      waMessage += `   Price: ₹${item.price * item.quantity}\n`;
+    });
+
+    waMessage += `\n*Subtotal:* ₹${subtotal}\n`;
+    waMessage += `*Delivery Fee:* ₹${deliveryFee}\n`;
+    waMessage += `*Tax:* ₹${tax}\n`;
+    waMessage += `*Total Amount:* ₹${total}\n\n`;
+    waMessage += `*Payment Method:* ${paymentMethod}`;
+
+    const whatsappNumber = await getWhatsAppNumber();
+    const formattedWaNum = whatsappNumber.replace(/\D/g, '');
+    const whatsappUrl = `https://api.whatsapp.com/send?phone=${formattedWaNum}&text=${encodeURIComponent(waMessage)}`;
+
+    res.json({ message: "Guest Order placed successfully", order, whatsappUrl });
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).json("Order failed");
+  }
+});
+
 
 
 /* =====================================================

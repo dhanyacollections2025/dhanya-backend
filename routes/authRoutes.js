@@ -8,6 +8,58 @@ const { generateOTP, hashOTP } = require("../utils/otpUtils");
 const { forgotPasswordLimiter } = require("../middleware/rateLimiter");
 
 
+const admin = require("../config/firebaseAdmin");
+
+// ================= FIREBASE SYNC =================
+router.post("/sync", async (req, res) => {
+  try {
+    const token = req.header("Authorization")?.split(" ")[1];
+    if (!token) return res.status(401).json({ msg: "No token" });
+
+    // Verify token with Firebase
+    const decodedToken = await admin.auth().verifyIdToken(token);
+    const { uid, email, name } = decodedToken;
+
+    // Check if user exists in DB
+    let user = await User.findOne({ email });
+
+    if (!user) {
+      // Create new user
+      user = new User({
+        name: name || email.split("@")[0],
+        email,
+        firebaseUid: uid,
+        isAdmin: false
+      });
+      await user.save();
+    } else if (!user.firebaseUid) {
+      // Link existing user to Firebase
+      user.firebaseUid = uid;
+      await user.save();
+    }
+
+    // Generate JWT for the synced user
+    const jwtToken = jwt.sign(
+      { id: user._id, isAdmin: user.isAdmin },
+      process.env.JWT_SECRET,
+      { expiresIn: "7d" }
+    );
+
+    res.json({
+      token: jwtToken,
+      user: {
+        id: user._id,
+        name: user.name,
+        email: user.email,
+        isAdmin: user.isAdmin
+      }
+    });
+  } catch (err) {
+    console.error("Sync error:", err);
+    res.status(401).json({ msg: "Invalid token or sync failed" });
+  }
+});
+
 // ================= REGISTER =================
 router.post("/register", async (req, res) => {
   const { name, email, password } = req.body;

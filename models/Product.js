@@ -12,13 +12,16 @@ const ProductSchema = new mongoose.Schema(
 
     category: {
       type: String,
-      enum: ["Men", "Women", "Unisex"],
       required: true
     },
 
     subCategory: {
       type: String,
       required: true
+    },
+
+    subSubCategory: {
+      type: String,
     },
 
     sizes: {
@@ -29,6 +32,11 @@ const ProductSchema = new mongoose.Schema(
     colors: {
       type: [String],
       default: []
+    },
+
+    stock: {
+      type: Number,
+      default: 0
     },
 
     description: String

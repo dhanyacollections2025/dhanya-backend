@@ -14,17 +14,10 @@ const AddressSchema = new mongoose.Schema({
 const UserSchema = new mongoose.Schema({
   name: String,
   email: { type: String, unique: true },
-  password: String,
+  firebaseUid: { type: String, unique: true, sparse: true },
   isAdmin: { type: Boolean, default: false },
 
-  addresses: [AddressSchema],
-
-  resetOTP: String,
-  resetOTPExpiry: Date,
-  resetAttempts: {
-    type: Number,
-    default: 0
-  }
+  addresses: [AddressSchema]
 });
 
 module.exports = mongoose.model("User", UserSchema);

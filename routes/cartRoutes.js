@@ -1,6 +1,31 @@
 const router = require("express").Router();
 const Cart = require("../models/Cart");
+const Product = require("../models/Product");
 const auth = require("../middleware/authMiddleware");
+
+// ================= FETCH GUEST CART =================
+router.post("/guest", async (req, res) => {
+  try {
+    const { items } = req.body;
+    if (!items || !Array.isArray(items)) return res.json({ items: [] });
+    
+    const populatedItems = [];
+    for (const item of items) {
+      const product = await Product.findById(item.productId);
+      if (product) {
+        populatedItems.push({
+          productId: product,
+          quantity: item.quantity,
+          size: item.size,
+          color: item.color
+        });
+      }
+    }
+    res.json({ items: populatedItems });
+  } catch (err) {
+    res.status(500).json("Server error");
+  }
+});
 
 router.post("/add", auth, async (req, res) => {
   const { productId } = req.body;
