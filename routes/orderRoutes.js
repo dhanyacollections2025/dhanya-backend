@@ -398,7 +398,13 @@ router.get("/admin/all", auth, async (req, res) => {
   if (!req.user.isAdmin)
     return res.status(403).json("Admin only");
 
-  const orders = await Order.find()
+  const { status } = req.query;
+  const filter = {};
+  if (status && status !== "all") {
+    filter.status = status;
+  }
+
+  const orders = await Order.find(filter)
     .populate("items.productId userId")
     .sort({ createdAt: -1 });
 
